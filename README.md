@@ -88,6 +88,23 @@ Next steps / suggestions
 - Add a `requirements.txt` or `environment.yml` for reproducible setup.
 - Add simple unit tests or an integration script to validate the Streamlit app and notebook examples.
 
+Repository hygiene
+- It's best not to commit Python bytecode or the __pycache__ directory. These are auto-generated and platform/Python-version specific.
+- Add the following to `.gitignore` to prevent accidental commits of compiled files:
+
+```powershell
+Add-Content -Path .gitignore -Value "__pycache__/"
+Add-Content -Path .gitignore -Value "*.pyc"
+```
+
+If `__pycache__` was previously committed, remove tracked compiled files with:
+
+```powershell
+git rm --cached -r __pycache__ || Write-Output 'No tracked __pycache__'
+git add .gitignore
+git commit -m "chore: ignore Python bytecode and __pycache__"
+```
+
 License
 - Add your preferred license here (e.g., MIT) if you plan to publish the repository.
 

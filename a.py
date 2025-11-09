@@ -1,46 +1,38 @@
-# %% [markdown]
-# 
-# # Driver Drowsiness Detection — All-in-One Notebook
-# 
-# This notebook contains a complete pipeline for a simple driver drowsiness detection project:
-# 
-# 1. Install required packages  
-# 2. Download a Kaggle drowsiness dataset using **kagglehub** (or Kaggle CLI fallback)  
-# 3. Inspect and split data into train/validation (open/closed eyes)  
-# 4. Train a small CNN classifier on eye patches (open vs closed)  
-# 5. Run two live demos:
-#    - EAR (Eye Aspect Ratio) — lightweight, rule-based
-#    - CNN-based eye classifier with temporal smoothing
-# 
-# > **Notes**
-# - You may need to run notebook cells one-by-one.
-# - `dlib` and `kagglehub` installation can be platform-specific; on Windows, `dlib` may require extra steps (conda recommended).
-# - This notebook will save model files and small datasets in the working directory.
-# 
+"""Usage: install dependencies (see README), then run cells or execute as a script.
+On Windows install dlib via conda-forge: conda install -c conda-forge dlib
+"""
 
-# %%
+import sys
+import subprocess
+import os
+import shutil
+import random
+import sys
+import subprocess
+import os
+import shutil
+import random
 
-# Install required packages. Restart the kernel if required after heavy installs (dlib/tensorflow).
-!pip install --upgrade pip
-!pip install opencv-python-headless==4.7.0.72 numpy tqdm imutils tensorflow keras kagglehub
-
-# dlib can be hard to pip-install on some systems. Try pip; if it fails, follow conda instructions in the markdown below.
-!pip install dlib || echo "dlib install failed — if on Windows, consider: conda install -c conda-forge dlib"
+def _pip_install(packages):
+    try:
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install'] + packages)
+    except Exception as _e:
+        print('Warning: pip install failed for', packages, '-', _e)
 
 
-# %% [markdown]
-# 
-# ## Download dlib's 68-point facial landmark model
-# 
-# You need `shape_predictor_68_face_landmarks.dat` for EAR and CNN demos. Download from the dlib model zoo:
-# - Official: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
-# 
-# After downloading, decompress and place `shape_predictor_68_face_landmarks.dat` in the notebook's working directory.
-# 
+_pip_install(['--upgrade','pip'])
+_pip_install(['opencv-python-headless==4.7.0.72','numpy','tqdm','imutils','tensorflow','keras','kagglehub'])
 
-# %%
+try:
+    _pip_install(['dlib'])
+except Exception:
+    print('dlib install attempted and failed — if on Windows, consider: conda install -c conda-forge dlib')
 
-# Download dataset using kagglehub (Python). If kagglehub fails, use Kaggle CLI as fallback.
+
+
+
+OUT_DIR = 'kaggle_data/yawn_eye'
+os.makedirs(OUT_DIR, exist_ok=True)
 import os
 OUT_DIR = 'kaggle_data/yawn_eye'
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -48,7 +40,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 try:
     import kagglehub
     print("kagglehub available — attempting download (may prompt for credentials).")
-    kagglehub.login()  # may prompt interactive login or use existing env vars
+    kagglehub.login()
     handle = 'serenaraju/yawn-eye-dataset-new'
     kagglehub.dataset_download(handle, path=OUT_DIR, unzip=True, force_download=False)
     print("Downloaded with kagglehub into", OUT_DIR)
@@ -56,18 +48,13 @@ except Exception as e:
     print("kagglehub download failed or not available:", e)
     print("Try Kaggle CLI (you must place kaggle.json in ~/.kaggle/) — running fallback command if kaggle is installed.")
     try:
-        # Attempt Kaggle CLI download
-        get_ipython().system('kaggle datasets download -d serenaraju/yawn-eye-dataset-new -p kaggle_data/yawn_eye --unzip')
+        subprocess.check_call(['kaggle','datasets','download','-d','serenaraju/yawn-eye-dataset-new','-p',OUT_DIR,'--unzip'])
         print("Downloaded with Kaggle CLI into", OUT_DIR)
     except Exception as e2:
         print("Kaggle CLI failed as well. Please download the dataset manually from Kaggle and place it under", OUT_DIR)
 
 
-# %%
-
-# Inspect downloaded folder structure (list a few files)
-import os
-root = 'kaggle_data/yawn_eye'
+root = OUT_DIR
 for root_dir, dirs, files in os.walk(root):
     print("DIR:", root_dir)
     print("Subdirs:", dirs)
@@ -75,12 +62,7 @@ for root_dir, dirs, files in os.walk(root):
     break
 
 
-# %%
-
-# Split dataset into train/val and into open/closed folders.
-# This uses a simple filename heuristic: filenames containing 'open' -> open else 'closed'.
-import os, shutil, random
-src = 'kaggle_data/yawn_eye'
+src = OUT_DIR
 dst_base = 'data'
 train_open = os.path.join(dst_base,'train','open')
 train_closed = os.path.join(dst_base,'train','closed')
@@ -89,7 +71,6 @@ val_closed = os.path.join(dst_base,'val','closed')
 for p in [train_open, train_closed, val_open, val_closed]:
     os.makedirs(p, exist_ok=True)
 
-# gather images in src (flatten)
 image_files = []
 for root_dir, dirs, files in os.walk(src):
     for f in files:
@@ -105,11 +86,9 @@ def label_from_name(fname):
     n = fname.lower()
     if 'open' in n: return 'open'
     if 'closed' in n or 'close' in n: return 'closed'
-    # fallback: if directory name contains 'closed' or 'open' use that
     d = os.path.basename(os.path.dirname(fname)).lower()
     if 'open' in d: return 'open'
     if 'closed' in d or 'close' in d: return 'closed'
-    # fallback default (user should curate)
     return 'open'
 
 for i, fpath in enumerate(image_files):
@@ -124,9 +103,6 @@ print("Copied. Train size:", sum(len(files) for _,_,files in os.walk(os.path.joi
       "Val size:", sum(len(files) for _,_,files in os.walk(os.path.join(dst_base,'val'))))
 
 
-# %%
-
-# Utility: extract eye patches from images using dlib landmarks (for better training data)
 import cv2, dlib, os, numpy as np
 from imutils import face_utils
 
@@ -150,25 +126,24 @@ def crop_eye_from_image(img_path, out_path, resize=(64,64)):
     leftEye = shape[lStart:lEnd]
     rightEye = shape[rStart:rEnd]
     def crop(eye):
-        x1 = np.min(eye[:,0]) - 5
-        y1 = np.min(eye[:,1]) - 5
-        x2 = np.max(eye[:,0]) + 5
-        y2 = np.max(eye[:,1]) + 5
+        x1 = int(np.min(eye[:,0]) - 5)
+        y1 = int(np.min(eye[:,1]) - 5)
+        x2 = int(np.max(eye[:,0]) + 5)
+        y2 = int(np.max(eye[:,1]) + 5)
         x1, y1 = max(0,x1), max(0,y1)
+        x2, y2 = max(0,x2), max(0,y2)
         return cv2.resize(img[y1:y2, x1:x2], resize)
     le = crop(leftEye)
     re = crop(rightEye)
-    # save left and right as separate files
     cv2.imwrite(out_path.replace('.png','_L.png'), le)
     cv2.imwrite(out_path.replace('.png','_R.png'), re)
     return True
 
-# Example: process a few files from train to make eye dataset (only if predictor present)
 if os.path.exists(PRED_PATH):
     src_dir = 'data/train/open'
     dst_eye_dir = 'data_eyes/train/open'
     os.makedirs(dst_eye_dir, exist_ok=True)
-    files = os.listdir(src_dir)[:200]  # process first 200 for demo
+    files = os.listdir(src_dir)[:200]
     cnt = 0
     for f in files:
         ok = crop_eye_from_image(os.path.join(src_dir,f), os.path.join(dst_eye_dir, f))
@@ -178,13 +153,9 @@ else:
     print("Skipping eye extraction — download shape_predictor_68_face_landmarks.dat to enable this step.")
 
 
-# %%
-
-# Train a small CNN on the prepared data (expects data/train and data/val with subfolders 'open' and 'closed')
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-import os
 
 img_size = (64,64)
 batch = 32
@@ -217,10 +188,6 @@ else:
     print("Saved model to eye_model.h5")
 
 
-# %%
-
-# EAR-based realtime drowsiness detection demo.
-# Requires 'shape_predictor_68_face_landmarks.dat' in working directory and a camera.
 import cv2
 import dlib
 import numpy as np
@@ -283,9 +250,6 @@ else:
     cv2.destroyAllWindows()
 
 
-# %%
-
-# CNN-based realtime drowsiness detection demo (uses trained 'eye_model.h5')
 import cv2, dlib, os, numpy as np
 from imutils import face_utils
 from tensorflow.keras.models import load_model
@@ -305,11 +269,12 @@ else:
     (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
 
     def crop_eye(frame, eye_pts):
-        x1 = np.min(eye_pts[:,0]) - 5
-        y1 = np.min(eye_pts[:,1]) - 5
-        x2 = np.max(eye_pts[:,0]) + 5
-        y2 = np.max(eye_pts[:,1]) + 5
+        x1 = int(np.min(eye_pts[:,0]) - 5)
+        y1 = int(np.min(eye_pts[:,1]) - 5)
+        x2 = int(np.max(eye_pts[:,0]) + 5)
+        y2 = int(np.max(eye_pts[:,1]) + 5)
         x1, y1 = max(0,x1), max(0,y1)
+        x2, y2 = max(0,x2), max(0,y2)
         crop = frame[y1:y2, x1:x2]
         try:
             crop = cv2.resize(crop, (64,64))
@@ -337,7 +302,6 @@ else:
                 continue
             p_left = model.predict(np.expand_dims(le.astype('float32')/255.0,0))[0][0]
             p_right = model.predict(np.expand_dims(re.astype('float32')/255.0,0))[0][0]
-            # assume model outputs prob of "open" class; closed_prob = 1 - avg(open_prob)
             closed_prob = 1.0 - ((p_left + p_right) / 2.0)
             if closed_prob > THRESH_PROB:
                 closed_count += 1
@@ -352,23 +316,6 @@ else:
     cv2.destroyAllWindows()
 
 
-# %% [markdown]
-# 
-# ## Wrap-up / Tips
-# 
-# - If `dlib` installation fails on your platform, consider:
-#   - Using conda: `conda install -c conda-forge dlib`
-#   - Or using alternative face+landmark detectors (mediapipe) — faster and easier to install.
-# 
-# - If the Kaggle dataset download fails:
-#   - Download manually from Kaggle and place images under `kaggle_data/yawn_eye`.
-#   - Curate a small open/closed split to train the demo model.
-# 
-# - To speed up training, reduce `epochs` or use a smaller batch size.
-# 
-# If you want, I can:
-# - produce a ready-to-run Colab notebook (with GPU) instead,
-# - or adjust the notebook to use MediaPipe instead of dlib (no external model download).
-# 
+print('Wrap-up: if dlib install fails on Windows use conda install -c conda-forge dlib; or consider MediaPipe as an alternative.')
 
 

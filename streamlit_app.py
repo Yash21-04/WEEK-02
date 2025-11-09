@@ -4,11 +4,12 @@ import numpy as np
 import time
 import threading
 import os
-from tensorflow.keras.models import load_model
-from imutils import face_utils
-import dlib
-from scipy.spatial import distance
 from collections import deque
+
+load_model = None
+face_utils = None
+dlib = None
+distance = None
 
 st.set_page_config(page_title='Drowsiness Demo — Dual Models', layout='wide')
 st.title('Driver Drowsiness — Streamlit Frontend (Two Models & Live Graphs)')
@@ -28,7 +29,6 @@ stop_button = st.sidebar.button('Stop')
 placeholder = st.empty()
 col1, col2 = st.columns([2,1])
 
-# session state
 if 'running' not in st.session_state:
     st.session_state.running = False
 if 'cap' not in st.session_state:
@@ -46,7 +46,6 @@ if 'histB' not in st.session_state:
 if 'histEAR' not in st.session_state:
     st.session_state.histEAR = deque(maxlen=200)
 
-# Save uploaded files
 os.makedirs('uploads', exist_ok=True)
 if predictor_file is not None:
     ppath = os.path.join('uploads', predictor_file.name)
@@ -58,19 +57,38 @@ if modelA_file is not None:
     mpath = os.path.join('uploads', modelA_file.name)
     with open(mpath, 'wb') as f:
         f.write(modelA_file.getbuffer())
-    st.session_state.modelA = load_model(mpath)
+    try:
+        if load_model is None:
+            from tensorflow.keras.models import load_model as _load_model
+            load_model = _load_model
+        st.session_state.modelA = load_model(mpath)
+    except Exception as e:
+        st.error(f"Could not load Model A: {e}")
+        st.session_state.modelA = None
 
 if modelB_file is not None:
     mpath = os.path.join('uploads', modelB_file.name)
     with open(mpath, 'wb') as f:
         f.write(modelB_file.getbuffer())
-    st.session_state.modelB = load_model(mpath)
+    try:
+        if load_model is None:
+            from tensorflow.keras.models import load_model as _load_model
+            load_model = _load_model
+        st.session_state.modelB = load_model(mpath)
+    except Exception as e:
+        st.error(f"Could not load Model B: {e}")
+        st.session_state.modelB = None
 
-# helpers
 def eye_aspect_ratio(eye):
-    A = distance.euclidean(eye[1], eye[5])
-    B = distance.euclidean(eye[2], eye[4])
-    C = distance.euclidean(eye[0], eye[3])
+    try:
+        from scipy.spatial import distance as _distance
+    except Exception:
+        def _euclidean(a, b):
+            return np.linalg.norm(np.array(a) - np.array(b))
+        _distance = type('D', (), {'euclidean': staticmethod(_euclidean)})()
+    A = _distance.euclidean(eye[1], eye[5])
+    B = _distance.euclidean(eye[2], eye[4])
+    C = _distance.euclidean(eye[0], eye[3])
     return (A + B) / (2.0 * C)
 
 def crop_eye(frame, eye_pts):
@@ -87,16 +105,24 @@ def crop_eye(frame, eye_pts):
         return None
     return crop
 
-# processing thread
 def run_pipeline(cap, mode, modelA, modelB, predictor_path):
     if predictor_path is None:
         st.error('Dlib predictor required. Upload it in the sidebar.')
         st.session_state.running = False
         return
-    detector = dlib.get_frontal_face_detector()
-    predictor = dlib.shape_predictor(predictor_path)
-    (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS['left_eye']
-    (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS['right_eye']
+
+    try:
+        import dlib as _dlib
+        from imutils import face_utils as _face_utils
+    except Exception as e:
+        st.error(f"Missing required package for facial landmarks: {e}")
+        st.session_state.running = False
+        return
+
+    detector = _dlib.get_frontal_face_detector()
+    predictor = _dlib.shape_predictor(predictor_path)
+    (lStart, lEnd) = _face_utils.FACIAL_LANDMARKS_IDXS['left_eye']
+    (rStart, rEnd) = _face_utils.FACIAL_LANDMARKS_IDXS['right_eye']
 
     ear_thresh = 0.25
     ear_consec = 18
@@ -130,11 +156,10 @@ def run_pipeline(cap, mode, modelA, modelB, predictor_path):
             cv2.drawContours(frame_display, [rightHull], -1, (0,255,0), 1)
 
             if mode == 'EAR (fast) + CNN':
-                # EAR
                 l_ear = eye_aspect_ratio(leftEye)
                 r_ear = eye_aspect_ratio(rightEye)
                 ear = (l_ear + r_ear) / 2.0
-                probEAR = max(0.0, min(1.0, 1.0 - (ear / 0.4)))  # heuristically convert to "closed probability"
+                probEAR = max(0.0, min(1.0, 1.0 - (ear / 0.4)))
                 st.session_state.histEAR.append(probEAR)
                 if ear < ear_thresh:
                     ear_closed_count += 1
@@ -143,7 +168,6 @@ def run_pipeline(cap, mode, modelA, modelB, predictor_path):
                 else:
                     ear_closed_count = 0
 
-            # CNN models (if provided)
             le = crop_eye(frame, leftEye)
             re = crop_eye(frame, rightEye)
             if le is not None and re is not None:
@@ -170,17 +194,14 @@ def run_pipeline(cap, mode, modelA, modelB, predictor_path):
                     else:
                         cnnB_closed_count = 0
 
-        # display frame
         frame_display = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
         img_placeholder.image(frame_display, channels='RGB')
 
-        # update charts (show last N values)
         if len(st.session_state.histA) > 0:
             chartA.line_chart({'Model A (closed_prob)': list(st.session_state.histA)})
         if len(st.session_state.histB) > 0:
             chartB.line_chart({'Model B (closed_prob)': list(st.session_state.histB)})
         if len(st.session_state.histEAR) > 0:
-            # show EAR converted probability alongside (in small chart)
             col2.line_chart({'EAR (heuristic closed_prob)': list(st.session_state.histEAR)})
 
         status.text(f"Mode: {mode} — Running — ModelA: {'loaded' if modelA is not None else 'none'} — ModelB: {'loaded' if modelB is not None else 'none'}")
@@ -190,7 +211,6 @@ def run_pipeline(cap, mode, modelA, modelB, predictor_path):
     img_placeholder.empty()
     col2.empty()
 
-# Start/Stop
 if start_button:
     if st.session_state.running:
         st.warning('Already running')
