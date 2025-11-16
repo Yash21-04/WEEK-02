@@ -164,19 +164,7 @@ Final-Submission/
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 📌 Citation
 
-If you use this project in your research or work, please cite:
-
-```bibtex
-@misc{driver_drowsiness_detection,
-  author = {Yash21-04},
-  title = {Driver Drowsiness Detection},
-  year = {2025},
-  publisher = {GitHub},
-  journal = {GitHub Repository},
-  howpublished = {\url{https://github.com/Yash21-04/Final-Submission}}
-}
 ```
 
 ---
